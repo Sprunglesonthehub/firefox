@@ -13,7 +13,7 @@ pool:
 
 variables:
   # IMPORTANT: Change this value to the name of the GitHub Service Connection you created.
-  gitHubConnectionName: 'FirefoxRepoConnection'
+  gitHubConnectionName: 'Sprunglesonthehub.firefox'
   # Disabling telemetry in the build process itself
   MOZ_TELEMETRY_ON_BUILD: 0
 
