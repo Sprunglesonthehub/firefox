@@ -1,0 +1,95 @@
+# Azure Pipeline to compile Firefox from the 'Sprunglesonthehub/firefox' repository,
+# package it as an RPM, and create a GitHub Release.
+
+# Trigger this pipeline on any push to the 'main' branch.
+trigger:
+- main
+
+pool:
+  # Using a standard Linux agent.
+  # WARNING: Compiling Firefox is resource-intensive and may take 2-3+ hours.
+  # For consistent success, a powerful self-hosted agent is recommended.
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # IMPORTANT: Change this value to the name of the GitHub Service Connection you created.
+  gitHubConnectionName: 'FirefoxRepoConnection'
+  # Disabling telemetry in the build process itself
+  MOZ_TELEMETRY_ON_BUILD: 0
+
+jobs:
+- job: BuildAndReleaseFirefox
+  displayName: 'Compile, Package (RPM) & Release'
+  # Increase the job timeout significantly. Default is 60 minutes.
+  timeoutInMinutes: 360
+
+  steps:
+  - checkout: self
+    displayName: '1. Checkout Your Firefox Fork'
+    # A shallow clone is essential to save time and disk space on CI agents.
+    fetchDepth: 1
+
+  - task: Cache@2
+    displayName: '2. Cache ~/.mozbuild dependencies'
+    inputs:
+      # Caching the build toolchain (Clang, Rust, etc.) saves a lot of time on subsequent builds.
+      key: 'mozbuild | $(Agent.OS)'
+      path: '~/.mozbuild'
+
+  - script: |
+      # Install base libraries required for the bootstrap process.
+      # CRITICAL: We also install 'rpm', which is needed to create the RPM package.
+      sudo apt-get update
+      sudo apt-get install -y python3-pip libdbus-glib-1-dev rpm
+    displayName: '3. Install Build & RPM Dependencies'
+
+  - script: |
+      # The --no-interactive flag is required for automated CI environments.
+      # This downloads and sets up the entire build toolchain.
+      ./mach bootstrap --no-interactive --application-choice=browser
+    displayName: '4. Bootstrap Firefox Build Environment'
+
+  - script: |
+      # This file configures the build for a non-debug, optimized release.
+      # Disabling tests significantly speeds up the compile time.
+      echo "ac_add_options --enable-release" >> .mozconfig
+      echo "ac_add_options --disable-debug" >> .mozconfig
+      echo "ac_add_options --disable-tests" >> .mozconfig
+      echo "ac_add_options --disable-telemetry" >> .mozconfig
+
+      echo "--- .mozconfig created ---"
+      cat .mozconfig
+      echo "--------------------------"
+    displayName: '5. Create .mozconfig Build Configuration'
+
+  - script: |
+      # This is the main compilation step and will take a very long time.
+      ./mach build
+    displayName: '6. Build Firefox'
+
+  - script: |
+      # This command packages the compiled application into an RPM file.
+      ./mach package --format rpm
+    displayName: '7. Package build as RPM'
+
+  - task: GitHubRelease@1
+    displayName: '8. Create GitHub Release'
+    # This condition is VERY important. It ensures releases are only created for successful
+    # builds on the 'main' branch, not for every commit on feature branches.
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    inputs:
+      # Links to the service connection you created in the prerequisites.
+      gitHubConnection: $(gitHubConnectionName)
+      # This automatically uses your repository name: 'Sprunglesonthehub/firefox'.
+      repositoryName: '$(Build.Repository.Name)'
+      action: 'create'
+      # The release is created against the specific commit that triggered this pipeline.
+      target: '$(Build.SourceVersion)'
+      # The git tag for the release. Using the build number makes it unique (e.g., 'release-20231027.1').
+      tag: 'release-$(Build.BuildNumber)'
+      releaseNotesSource: 'inline'
+      releaseNotesInline: 'Automated Firefox build from Azure Pipelines. Build ID: $(Build.BuildNumber)'
+      # Marks this as a "pre-release," which is good practice for automated builds.
+      isPreRelease: true
+      # Finds the generated RPM file in the build output directory and uploads it.
+      assets: '$(Build.SourcesDirectory)/obj-*/dist/*.rpm'
